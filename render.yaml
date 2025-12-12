@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: edrive-backend
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: MONGO_USERNAME
+        value: romaisamaqbool008_db_user
+      - key: MONGO_PASSWORD
+        value: arm256
+      - key: PYTHON_VERSION
+        value: 3.11.0
