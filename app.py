@@ -1,3 +1,4 @@
+# ==================== IMPORTS ====================
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from pymongo import MongoClient
@@ -5,38 +6,31 @@ from datetime import datetime
 import uuid
 import hashlib
 import os
+import requests
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
-
-# Enable CORS for ALL origins during development
 CORS(app, supports_credentials=True, origins=["http://localhost:*", "http://127.0.0.1:*", "*"])
 
-# MongoDB Connection - using environment variables for security
 username = os.getenv('MONGO_USERNAME', "romaisamaqbool008_db_user")
 password = os.getenv('MONGO_PASSWORD', "arm256")
-
 MONGO_URI = f"mongodb+srv://{username}:{password}@cluster0.yleenkw.mongodb.net/energy_trading?retryWrites=true&w=majority"
 
 print("=" * 60)
 print("🚀 E-Drive Cloud Marketplace Backend")
 print("=" * 60)
 
-# Initialize db as None
 db = None
 client = None
+db_users = None
 
 try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     client.admin.command('ping')
-    
-    # Use TWO databases
-    db_users = client['edrive']  # For users collection
-    db = client['energy_trading']  # For requests/offers
-    
+    db_users = client['edrive']
+    db = client['energy_trading']
     print("✅ MongoDB Cloud Connected Successfully!")
     print(f"📊 Users Database: {db_users.name}")
     print(f"📊 Trading Database: {db.name}")
@@ -47,8 +41,34 @@ except Exception as e:
     db_users = None
     client = None
 
+
+# ==================== BLOCKCHAIN INTEGRATION ====================
+
+BLOCKCHAIN_URL = os.getenv('BLOCKCHAIN_URL', 'http://localhost:5050')
+
+def record_trade_on_blockchain(buyer_email, seller_email, units, price_per_unit):
+    try:
+        response = requests.post(
+            f"{BLOCKCHAIN_URL}/api/trade",
+            json={
+                "buyer":           buyer_email,
+                "seller":          seller_email,
+                "units":           float(units),
+                "seller_price_ec": float(price_per_unit)
+            },
+            timeout=10
+        )
+        result = response.json()
+        print(f"⛓️  Blockchain result: {result}")
+        return result
+    except Exception as e:
+        print(f"[WARN] Blockchain record failed: {e}")
+        return {"success": False, "error": str(e)}
+
+# ================================================================
+
+
 def is_db_connected():
-    """Check if database is connected"""
     if db is None or db_users is None or client is None:
         return False
     try:
@@ -58,14 +78,13 @@ def is_db_connected():
         return False
 
 def hash_password(password):
-    """Simple password hashing using SHA256"""
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
+
 
 # ==================== BASIC ENDPOINTS ====================
 
 @app.route('/')
 def home():
-    """Home page - shows API status"""
     return jsonify({
         "message": "⚡ E-Drive Energy Marketplace API",
         "status": "running",
@@ -73,16 +92,16 @@ def home():
         "database": "connected" if is_db_connected() else "disconnected",
         "timestamp": datetime.now().isoformat(),
         "endpoints": {
-            "auth": ["POST /api/login", "POST /api/signup", "POST /api/logout"],
+            "auth": ["POST /api/login", "POST /api/signup"],
             "marketplace": ["POST /api/sell-energy", "POST /api/buy-energy", "GET /api/energy-listings"],
-            "user": ["GET /api/profile", "GET /api/wallet", "GET /api/transactions"],
+            "trading": ["POST /api/confirm-trade", "GET /api/trade-history"],
+            "wallet": ["GET /api/wallet", "POST /api/wallet/topup", "GET /api/rates"],
             "health": ["GET /health", "GET /api/status"]
         }
     })
 
 @app.route('/health')
 def health():
-    """Health check endpoint"""
     return jsonify({
         "status": "healthy",
         "server": "E-Drive Backend",
@@ -93,7 +112,6 @@ def health():
 
 @app.route('/api/status')
 def api_status():
-    """API status check"""
     return jsonify({
         "success": True,
         "message": "API is operational",
@@ -101,60 +119,38 @@ def api_status():
         "mongodb": "connected" if is_db_connected() else "disconnected"
     })
 
+
 # ==================== AUTHENTICATION ENDPOINTS ====================
 
 @app.route('/api/login', methods=['POST', 'OPTIONS'])
 def login():
-    """User login endpoint"""
     if request.method == 'OPTIONS':
         return jsonify({}), 200
-    
     try:
         data = request.get_json()
         if not data:
             return jsonify({"success": False, "message": "No data provided"}), 400
-            
+
         email = data.get('email', '').strip().lower()
         password = data.get('password', '')
 
         print(f"🔐 Login attempt for: {email}")
 
         if not email or not password:
-            return jsonify({
-                "success": False,
-                "message": "Email and password are required"
-            }), 400
+            return jsonify({"success": False, "message": "Email and password are required"}), 400
 
-        # Check database connection
         if not is_db_connected():
-            return jsonify({
-                "success": False,
-                "message": "Database not connected. Please try again later."
-            }), 500
+            return jsonify({"success": False, "message": "Database not connected."}), 500
 
-        # Find user in database
         user = db_users.users.find_one({"email": email})
-        
         if not user:
-            print(f"❌ User not found: {email}")
-            return jsonify({
-                "success": False,
-                "message": "Invalid email or password"
-            }), 401
-        
-        # Check password (handle both hashed and plain passwords)
+            return jsonify({"success": False, "message": "Invalid email or password"}), 401
+
         stored_password = user.get('password', '')
         hashed_input = hash_password(password)
-        
-        # Check if password matches (either plain or hashed)
         if stored_password != hashed_input and stored_password != password:
-            print(f"❌ Password mismatch for: {email}")
-            return jsonify({
-                "success": False,
-                "message": "Invalid email or password"
-            }), 401
+            return jsonify({"success": False, "message": "Invalid email or password"}), 401
 
-        # Create session token
         session_token = str(uuid.uuid4())
         db_users.users.update_one(
             {"email": email},
@@ -162,8 +158,6 @@ def login():
         )
 
         print(f"✅ Login successful for: {email}")
-        
-        # Return user data WITHOUT role (let dashboard set it)
         return jsonify({
             "success": True,
             "message": "Login successful!",
@@ -172,168 +166,239 @@ def login():
                 "user_id": user.get('user_id', str(user['_id'])),
                 "email": user['email'],
                 "name": user.get('name', user.get('full_name', '')),
-                "role": user.get('role', None),  # Return None if no role set
+                "role": user.get('role', None),
                 "wallet_balance": float(user.get('wallet_balance', 1000)),
                 "phone": user.get('phone', ''),
                 "address": user.get('address', '')
             }
         })
-
     except Exception as e:
         print(f"🔥 Login error: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({
-            "success": False,
-            "message": f"Server error: {str(e)}"
-        }), 500
+        return jsonify({"success": False, "message": f"Server error: {str(e)}"}), 500
+
 
 @app.route('/api/signup', methods=['POST', 'OPTIONS'])
 def signup():
-    """User registration endpoint"""
     if request.method == 'OPTIONS':
         return jsonify({}), 200
-    
     try:
         data = request.get_json()
         if not data:
             return jsonify({"success": False, "message": "No data provided"}), 400
-        
+
         name = data.get('name', '').strip()
         email = data.get('email', '').strip().lower()
         password = data.get('password', '')
-        
+
         print(f"📝 Signup attempt: {name} ({email})")
-        
-        # Validation
+
         if not name:
             return jsonify({"success": False, "message": "Name is required"}), 400
-            
         if not email:
             return jsonify({"success": False, "message": "Email is required"}), 400
-            
         if not password:
             return jsonify({"success": False, "message": "Password is required"}), 400
-            
         if len(password) < 6:
             return jsonify({"success": False, "message": "Password must be at least 6 characters"}), 400
 
-        # Check database connection
         if not is_db_connected():
-            return jsonify({
-                "success": False,
-                "message": "Database not connected. Cannot create account."
-            }), 500
-        
-        # Check if email already exists
+            return jsonify({"success": False, "message": "Database not connected."}), 500
+
         existing_user = db_users.users.find_one({"email": email})
         if existing_user:
-            print(f"❌ Email already registered: {email}")
             return jsonify({"success": False, "message": "Email already registered"}), 400
-        
-        # Create new user WITHOUT role
+
+        # ── Create EC wallet on blockchain ───────────────────────
+        try:
+            wallet_response = requests.post(
+                f"{BLOCKCHAIN_URL}/api/wallet/create",
+                json={"username": email},
+                timeout=10
+            )
+            wallet_data = wallet_response.json()
+            ec_balance = wallet_data.get("wallet", {}).get("balance", 500)
+            wallet_address = wallet_data.get("wallet", {}).get("address", "")
+            print(f"⛓️  EC Wallet created for {email}: {wallet_address}")
+        except Exception as e:
+            print(f"[WARN] Could not create blockchain wallet: {e}")
+            ec_balance = 500
+            wallet_address = ""
+        # ────────────────────────────────────────────────────────
+
         user = {
             "user_id": str(uuid.uuid4()),
             "name": name,
             "email": email,
             "password": password,
-            # NO ROLE - user will choose on dashboard
             "wallet_balance": 1000.00,
+            "ec_balance": ec_balance,
+            "ec_wallet_address": wallet_address,
             "created_at": datetime.now().isoformat(),
             "session_token": str(uuid.uuid4())
         }
-        
-        # Insert into MongoDB
-        result = db_users.users.insert_one(user)
+
+        db_users.users.insert_one(user)
         print(f"✅ New user registered: {name} ({email})")
-        print(f"✅ MongoDB ID: {result.inserted_id}")
-        
-        # Prepare response
-        user_response = {
-            "user_id": user['user_id'],
-            "name": user['name'],
-            "email": user['email'],
-            "wallet_balance": user['wallet_balance'],
-            "role": None  # No role yet
-        }
-        
+
         return jsonify({
             "success": True,
             "message": "Account created successfully!",
-            "user": user_response,
+            "user": {
+                "user_id": user['user_id'],
+                "name": user['name'],
+                "email": user['email'],
+                "wallet_balance": user['wallet_balance'],
+                "ec_balance": user['ec_balance'],
+                "ec_wallet_address": user['ec_wallet_address'],
+                "role": None
+            },
             "session_token": user['session_token']
         }), 201
-        
+
     except Exception as e:
         print(f"❌ Signup error: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "message": f"Server error: {str(e)}"}), 500
+
+
 @app.route('/api/update-role', methods=['POST', 'OPTIONS'])
 def update_role():
-    """Update user role when they choose buyer or seller"""
     if request.method == 'OPTIONS':
         return jsonify({}), 200
-    
     try:
         data = request.get_json()
         email = data.get('email', '').strip().lower()
         role = data.get('role', '').strip().lower()
-        
-        print(f"🔄 Role update request: {email} → {role}")
-        
+
         if not email or not role:
             return jsonify({"success": False, "message": "Email and role required"}), 400
-        
         if role not in ['buyer', 'seller']:
             return jsonify({"success": False, "message": "Role must be 'buyer' or 'seller'"}), 400
-        
         if not is_db_connected():
-            return jsonify({
-                "success": False,
-                "message": "Database not connected"
-            }), 500
-        
-        # Update role in database
+            return jsonify({"success": False, "message": "Database not connected"}), 500
+
         result = db_users.users.update_one(
             {"email": email},
             {"$set": {"role": role, "role_updated_at": datetime.now().isoformat()}}
         )
-        
+
         if result.matched_count > 0:
-            print(f"✅ Updated role to '{role}' for {email}")
-            return jsonify({
-                "success": True,
-                "message": f"Role updated to {role}"
-            })
+            return jsonify({"success": True, "message": f"Role updated to {role}"})
         else:
-            print(f"❌ User not found: {email}")
-            return jsonify({
-                "success": False,
-                "message": "User not found"
-            }), 404
-            
+            return jsonify({"success": False, "message": "User not found"}), 404
+
     except Exception as e:
         print(f"❌ Update role error: {e}")
-        import traceback
-        traceback.print_exc()
         return jsonify({"success": False, "message": str(e)}), 500
 
-   
+
+# ==================== WALLET & RATES ENDPOINTS ====================
+
+@app.route('/api/wallet', methods=['GET'])
+def get_wallet():
+    """Get user wallet balance including EC balance from blockchain"""
+    try:
+        email = request.args.get('email', '').strip().lower()
+
+        if email:
+            try:
+                bc_response = requests.get(
+                    f"{BLOCKCHAIN_URL}/api/wallet/{email}",
+                    timeout=5
+                )
+                bc_data = bc_response.json()
+                ec_balance = bc_data.get("wallet", {}).get("balance", 500)
+                ec_address = bc_data.get("wallet", {}).get("address", "")
+            except Exception:
+                ec_balance = 500
+                ec_address = ""
+
+            pkr_balance = 1000.00
+            if is_db_connected():
+                user = db_users.users.find_one({"email": email})
+                if user:
+                    pkr_balance = float(user.get('wallet_balance', 1000))
+
+            return jsonify({
+                "success": True,
+                "email": email,
+                "pkr_balance": pkr_balance,
+                "ec_balance": ec_balance,
+                "ec_address": ec_address,
+                "last_updated": datetime.now().isoformat()
+            })
+
+        return jsonify({
+            "success": True,
+            "balance": 1000.00,
+            "currency": "PKR",
+            "ec_balance": 500,
+            "last_updated": datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        print(f"Wallet error: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route('/api/wallet/topup', methods=['POST', 'OPTIONS'])
+def wallet_topup():
+    """Add EC to a user's wallet (for demo/testing)"""
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    try:
+        data = request.get_json() or {}
+        username = data.get('username', '').strip().lower()
+        amount_ec = float(data.get('amount_ec', 500))
+
+        if not username:
+            return jsonify({"success": False, "error": "username required"}), 400
+
+        response = requests.post(
+            f"{BLOCKCHAIN_URL}/api/wallet/topup",
+            json={"username": username, "amount_ec": amount_ec},
+            timeout=10
+        )
+        return jsonify(response.json())
+    except Exception as e:
+        print(f"❌ Topup error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/rates', methods=['GET'])
+def get_rates():
+    """Get current energy rate period from blockchain"""
+    try:
+        response = requests.get(f"{BLOCKCHAIN_URL}/api/rates", timeout=5)
+        return jsonify(response.json())
+    except Exception as e:
+        # Return fallback rates if blockchain is down
+        return jsonify({
+            "success": True,
+            "rates": {
+                "period": "off_peak",
+                "ec_per_unit": 2.0,
+                "pkr_per_unit": 24,
+                "label": "Off-Peak 🟢",
+                "hours": "10PM - 6AM"
+            }
+        })
+
+
+# ==================== ENERGY LISTING ENDPOINTS ====================
 
 @app.route('/api/energy-offer', methods=['POST', 'OPTIONS'])
 def create_energy_offer():
-    """Create a new energy sale offer with location"""
     if request.method == 'OPTIONS':
         return jsonify({}), 200
-    
     try:
         data = request.get_json()
-        
         if not is_db_connected():
             return jsonify({"success": True, "message": "Offer saved (demo mode)"})
-        
-        # Create offer document with location
+
         offer_doc = {
             "offer_id": str(uuid.uuid4()),
             "user_id": data.get('user_id'),
@@ -343,42 +408,31 @@ def create_energy_offer():
             "packets": data.get('packets'),
             "price_per_packet": data.get('price_per_packet'),
             "total_value": data.get('total_value'),
-            "latitude": data.get('latitude'),  # NEW
-            "longitude": data.get('longitude'),  # NEW
-            "location_string": data.get('location_string'),  # NEW
+            "latitude": data.get('latitude'),
+            "longitude": data.get('longitude'),
+            "location_string": data.get('location_string'),
             "status": data.get('status', 'available'),
             "created_at": datetime.now().isoformat()
         }
-        
-        result = db.offers.insert_one(offer_doc)
-        print(f"📥 Sell offer from: {data.get('name')} ({data.get('email')}) at {data.get('location_string', 'unknown location')}")
-        
-        return jsonify({
-            "success": True,
-            "message": "Energy offer created successfully",
-            "offer_id": offer_doc['offer_id']
-        })
-        
+
+        db.offers.insert_one(offer_doc)
+        print(f"📥 Sell offer from: {data.get('name')} ({data.get('email')})")
+        return jsonify({"success": True, "message": "Energy offer created successfully", "offer_id": offer_doc['offer_id']})
+
     except Exception as e:
         print(f"❌ Create offer error: {e}")
-        import traceback
-        traceback.print_exc()
         return jsonify({"success": False, "message": str(e)}), 500
 
 
 @app.route('/api/energy-request', methods=['POST', 'OPTIONS'])
 def create_energy_request():
-    """Create a new energy purchase request with location"""
     if request.method == 'OPTIONS':
         return jsonify({}), 200
-    
     try:
         data = request.get_json()
-        
         if not is_db_connected():
             return jsonify({"success": True, "message": "Request saved (demo mode)"})
-        
-        # Create request document with location
+
         request_doc = {
             "request_id": str(uuid.uuid4()),
             "user_id": data.get('user_id'),
@@ -388,104 +442,186 @@ def create_energy_request():
             "packets": data.get('packets'),
             "price_per_packet": data.get('price_per_packet'),
             "total_price": data.get('total_price'),
-            "latitude": data.get('latitude'),  # NEW
-            "longitude": data.get('longitude'),  # NEW
-            "location_string": data.get('location_string'),  # NEW
+            "latitude": data.get('latitude'),
+            "longitude": data.get('longitude'),
+            "location_string": data.get('location_string'),
             "status": data.get('status', 'pending'),
             "created_at": datetime.now().isoformat()
         }
-        
-        result = db.requests.insert_one(request_doc)
-        print(f"📥 Buy request from: {data.get('name')} ({data.get('email')}) at {data.get('location_string', 'unknown location')}")
-        
-        return jsonify({
-            "success": True,
-            "message": "Energy request created successfully",
-            "request_id": request_doc['request_id']
-        })
-        
+
+        db.requests.insert_one(request_doc)
+        print(f"📥 Buy request from: {data.get('name')} ({data.get('email')})")
+        return jsonify({"success": True, "message": "Energy request created successfully", "request_id": request_doc['request_id']})
+
     except Exception as e:
         print(f"❌ Create request error: {e}")
-        import traceback
-        traceback.print_exc()
         return jsonify({"success": False, "message": str(e)}), 500
-    
+
 
 @app.route('/api/all-requests', methods=['GET', 'OPTIONS'])
 def get_all_requests():
-    """Get all buyer requests and seller offers"""
     if request.method == 'OPTIONS':
         return jsonify({}), 200
-    
     try:
-        print("📊 Getting all requests and offers...")
-        
         if not is_db_connected():
-            print("⚠️  Database not connected, returning empty lists")
-            return jsonify({
-                "success": True,
-                "requests": [],
-                "offers": []
-            })
-        
-        # Get all buyer requests from requests collection
-        requests_cursor = db.requests.find({})
+            return jsonify({"success": True, "requests": [], "offers": []})
+
         requests_list = []
-        for req in requests_cursor:
-            req['_id'] = str(req['_id'])  # Convert ObjectId to string
+        for req in db.requests.find({}):
+            req['_id'] = str(req['_id'])
             requests_list.append(req)
-        
-        # Get all seller offers from offers collection
-        offers_cursor = db.offers.find({})
+
         offers_list = []
-        for offer in offers_cursor:
-            offer['_id'] = str(offer['_id'])  # Convert ObjectId to string
+        for offer in db.offers.find({}):
+            offer['_id'] = str(offer['_id'])
             offers_list.append(offer)
-        
-        print(f"✅ Returning {len(requests_list)} requests and {len(offers_list)} offers")
-        
-        return jsonify({
-            "success": True,
-            "requests": requests_list,
-            "offers": offers_list
-        })
-        
+
+        return jsonify({"success": True, "requests": requests_list, "offers": offers_list})
+
     except Exception as e:
         print(f"❌ Get all requests error: {e}")
+        return jsonify({"success": False, "message": str(e), "requests": [], "offers": []}), 500
+
+
+# ==================== TRADE ENDPOINTS ====================
+
+@app.route('/api/confirm-trade', methods=['POST', 'OPTIONS'])
+def confirm_trade():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    try:
+        data = request.get_json()
+
+        buyer_email    = data.get('buyer_email', '').strip().lower()
+        seller_email   = data.get('seller_email', '').strip().lower()
+        units          = float(data.get('units', 0))
+        price_per_unit = float(data.get('price_per_unit', 0))
+        offer_id       = data.get('offer_id', '')
+
+        print(f"🤝 Trade confirmation: {buyer_email} ← {units} units ← {seller_email}")
+
+        if not buyer_email or not seller_email:
+            return jsonify({"success": False, "message": "buyer_email and seller_email are required"}), 400
+        if units <= 0:
+            return jsonify({"success": False, "message": "units must be greater than 0"}), 400
+        if price_per_unit <= 0:
+            return jsonify({"success": False, "message": "price_per_unit must be greater than 0"}), 400
+
+        transaction_id = str(uuid.uuid4())
+
+        if is_db_connected():
+            if offer_id:
+                db.offers.update_one(
+                    {"offer_id": offer_id},
+                    {"$set": {"status": "sold", "buyer_email": buyer_email, "sold_at": datetime.now().isoformat()}}
+                )
+            db.transactions.insert_one({
+                "transaction_id":  transaction_id,
+                "buyer_email":     buyer_email,
+                "seller_email":    seller_email,
+                "units":           units,
+                "price_per_unit":  price_per_unit,
+                "total_ec":        round(units * price_per_unit, 2),
+                "status":          "confirmed",
+                "blockchain_tx":   None,
+                "created_at":      datetime.now().isoformat()
+            })
+
+        # ── Record on blockchain ─────────────────────────────────
+        blockchain_result = record_trade_on_blockchain(
+            buyer_email=buyer_email,
+            seller_email=seller_email,
+            units=units,
+            price_per_unit=price_per_unit
+        )
+
+        if is_db_connected() and blockchain_result.get("success"):
+            db.transactions.update_one(
+                {"transaction_id": transaction_id},
+                {"$set": {
+                    "blockchain_tx":   blockchain_result.get("tx_id"),
+                    "private_block":   blockchain_result.get("private_block_index"),
+                    "blockchain_hash": blockchain_result.get("private_block_hash")
+                }}
+            )
+        # ────────────────────────────────────────────────────────
+
+        return jsonify({
+            "success": True,
+            "message": "Trade confirmed and recorded on blockchain!",
+            "transaction_id": transaction_id,
+            "trade": {
+                "buyer":          buyer_email,
+                "seller":         seller_email,
+                "units":          units,
+                "price_per_unit": price_per_unit,
+                "total_ec":       round(units * price_per_unit, 2)
+            },
+            "blockchain": {
+                "recorded":      blockchain_result.get("success", False),
+                "tx_id":         blockchain_result.get("tx_id"),
+                "private_block": blockchain_result.get("private_block_index"),
+                "block_hash":    blockchain_result.get("private_block_hash"),
+                "ec_paid":       blockchain_result.get("buyer_paid_ec"),
+                "ec_received":   blockchain_result.get("seller_received_ec"),
+                "period":        blockchain_result.get("period"),
+                "pkr_value":     blockchain_result.get("pkr_equivalent")
+            }
+        })
+
+    except Exception as e:
+        print(f"❌ Confirm trade error: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({
-            "success": False,
-            "message": str(e),
-            "requests": [],
-            "offers": []
-        }), 500
-    
+        return jsonify({"success": False, "message": str(e)}), 500
 
-# ==================== MARKETPLACE ENDPOINTS ====================
+
+@app.route('/api/trade-history', methods=['GET', 'OPTIONS'])
+def trade_history():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    try:
+        email = request.args.get('email', '').strip().lower()
+        if not email:
+            return jsonify({"success": False, "message": "email parameter required"}), 400
+        if not is_db_connected():
+            return jsonify({"success": True, "trades": [], "count": 0})
+
+        trades_cursor = db.transactions.find({
+            "$or": [{"buyer_email": email}, {"seller_email": email}]
+        }).sort("created_at", -1)
+
+        trades = []
+        for trade in trades_cursor:
+            trade['_id'] = str(trade['_id'])
+            trades.append(trade)
+
+        return jsonify({"success": True, "email": email, "trades": trades, "count": len(trades)})
+
+    except Exception as e:
+        print(f"❌ Trade history error: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
 
 # ==================== MARKETPLACE ENDPOINTS ====================
 
 @app.route('/api/sell-energy', methods=['POST', 'OPTIONS'])
 def sell_energy():
-    """Seller lists energy for sale"""
     if request.method == 'OPTIONS':
         return jsonify({}), 200
-    
     try:
         data = request.get_json()
         if not data:
             return jsonify({"success": False, "message": "No data provided"}), 400
-            
+
         session_token = data.get('session_token')
         energy_amount = float(data.get('energy_amount', 0))
         price_per_kwh = float(data.get('price_per_kwh', 0))
         location = data.get('location', 'Unknown Location')
-        
+
         if not session_token:
             return jsonify({"success": False, "message": "Session token required"}), 401
-        
-        # For demo mode
+
         if not is_db_connected():
             return jsonify({
                 "success": True,
@@ -500,16 +636,13 @@ def sell_energy():
                     "created_at": datetime.now().isoformat()
                 }
             })
-            
-        # Verify user
+
         user = db.users.find_one({"session_token": session_token})
         if not user:
             return jsonify({"success": False, "message": "Invalid session"}), 401
-            
         if user.get('role') != 'seller':
             return jsonify({"success": False, "message": "Only sellers can sell energy"}), 403
-            
-        # Create energy listing
+
         energy_listing = {
             "listing_id": str(uuid.uuid4()),
             "seller_id": user['user_id'],
@@ -523,361 +656,211 @@ def sell_energy():
             "buyer_id": None,
             "sold_at": None
         }
-        
+
         db.energy_listings.insert_one(energy_listing)
-        
-        print(f"✅ Energy listed: {energy_amount}kWh by {user['email']}")
-        
-        return jsonify({
-            "success": True,
-            "message": "Energy listed for sale successfully!",
-            "listing": energy_listing
-        })
-        
+        return jsonify({"success": True, "message": "Energy listed for sale successfully!", "listing": energy_listing})
+
     except Exception as e:
         print(f"🔥 Sell energy error: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
+
 @app.route('/api/buy-energy', methods=['POST', 'OPTIONS'])
 def buy_energy():
-    """Buyer purchases energy"""
     if request.method == 'OPTIONS':
         return jsonify({}), 200
-    
     try:
         data = request.get_json()
         if not data:
             return jsonify({"success": False, "message": "No data provided"}), 400
-            
+
         session_token = data.get('session_token')
         listing_id = data.get('listing_id')
-        
+
         if not session_token or not listing_id:
             return jsonify({"success": False, "message": "Session token and listing ID required"}), 400
-        
-        # For demo mode
+
         if not is_db_connected():
             return jsonify({
                 "success": True,
-                "message": "Energy purchased successfully (demo mode)",
+                "message": "Energy purchased (demo mode)",
                 "transaction_id": str(uuid.uuid4()),
                 "energy_amount": 50.0,
                 "total_price": 7.50,
                 "seller": "demo_seller@example.com"
             })
-            
-        # Verify user
+
         buyer = db.users.find_one({"session_token": session_token})
         if not buyer:
             return jsonify({"success": False, "message": "Invalid session"}), 401
-            
-        # Get energy listing
+
         listing = db.energy_listings.find_one({"listing_id": listing_id, "status": "available"})
         if not listing:
             return jsonify({"success": False, "message": "Energy listing not available"}), 404
-            
-        seller_id = listing['seller_id']
-        seller = db.users.find_one({"user_id": seller_id})
-        
+
+        seller = db.users.find_one({"user_id": listing['seller_id']})
         if not seller:
             return jsonify({"success": False, "message": "Seller not found"}), 404
-            
+
         total_price = listing['total_price']
-        
-        # Check buyer's balance
         if buyer['wallet_balance'] < total_price:
-            return jsonify({
-                "success": False, 
-                "message": "Insufficient balance",
-                "required": total_price,
-                "available": buyer['wallet_balance']
-            }), 400
-            
-        # Perform transaction
-        db.users.update_one(
-            {"user_id": buyer['user_id']},
-            {"$inc": {"wallet_balance": -total_price}}
-        )
-        
-        db.users.update_one(
-            {"user_id": seller_id},
-            {"$inc": {"wallet_balance": total_price}}
-        )
-        
-        # Update listing status
+            return jsonify({"success": False, "message": "Insufficient balance"}), 400
+
+        db.users.update_one({"user_id": buyer['user_id']}, {"$inc": {"wallet_balance": -total_price}})
+        db.users.update_one({"user_id": listing['seller_id']}, {"$inc": {"wallet_balance": total_price}})
         db.energy_listings.update_one(
             {"listing_id": listing_id},
-            {
-                "$set": {
-                    "status": "sold",
-                    "buyer_id": buyer['user_id'],
-                    "buyer_email": buyer['email'],
-                    "sold_at": datetime.now().isoformat()
-                }
-            }
+            {"$set": {"status": "sold", "buyer_id": buyer['user_id'], "sold_at": datetime.now().isoformat()}}
         )
-        
-        # Create transaction records
+
         transaction_id = str(uuid.uuid4())
-        
         db.transactions.insert_one({
             "transaction_id": transaction_id,
             "user_id": buyer['user_id'],
             "type": "energy_purchased",
             "amount": -total_price,
             "energy_amount": listing['energy_amount'],
-            "price_per_kwh": listing['price_per_kwh'],
             "timestamp": datetime.now().isoformat(),
-            "seller_email": seller['email'],
-            "details": f"Purchased {listing['energy_amount']} kWh from {seller['email']}"
+            "seller_email": seller['email']
         })
-        
-        db.transactions.insert_one({
-            "transaction_id": transaction_id,
-            "user_id": seller_id,
-            "type": "energy_sold",
-            "amount": total_price,
-            "energy_amount": listing['energy_amount'],
-            "price_per_kwh": listing['price_per_kwh'],
-            "timestamp": datetime.now().isoformat(),
-            "buyer_email": buyer['email'],
-            "details": f"Sold {listing['energy_amount']} kWh to {buyer['email']}"
-        })
-        
-        print(f"✅ Energy purchased: {listing['energy_amount']}kWh by {buyer['email']}")
-        
+
+        blockchain_result = record_trade_on_blockchain(
+            buyer_email=buyer['email'],
+            seller_email=seller['email'],
+            units=listing['energy_amount'],
+            price_per_unit=listing['price_per_kwh']
+        )
+
         return jsonify({
             "success": True,
             "message": "Energy purchase successful!",
             "transaction_id": transaction_id,
             "energy_amount": listing['energy_amount'],
             "total_price": total_price,
-            "seller": seller['email']
+            "seller": seller['email'],
+            "blockchain": {
+                "recorded":      blockchain_result.get("success", False),
+                "tx_id":         blockchain_result.get("tx_id"),
+                "private_block": blockchain_result.get("private_block_index")
+            }
         })
-        
+
     except Exception as e:
         print(f"🔥 Buy energy error: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
+
 @app.route('/api/energy-listings', methods=['GET'])
 def get_energy_listings():
-    """Get all available energy listings"""
     try:
         if not is_db_connected():
-            # Demo data
-            demo_listings = [
-                {
-                    "listing_id": "demo_001",
-                    "seller_email": "solar_farm@example.com",
-                    "energy_amount": 100.0,
-                    "price_per_kwh": 0.12,
-                    "total_price": 12.00,
-                    "location": "Solar Farm A",
-                    "status": "available",
-                    "created_at": datetime.now().isoformat()
-                },
-                {
-                    "listing_id": "demo_002",
-                    "seller_email": "wind_park@example.com",
-                    "energy_amount": 75.5,
-                    "price_per_kwh": 0.15,
-                    "total_price": 11.33,
-                    "location": "Wind Park B",
-                    "status": "available",
-                    "created_at": datetime.now().isoformat()
-                },
-                {
-                    "listing_id": "demo_003",
-                    "seller_email": "home_solar@example.com",
-                    "energy_amount": 25.0,
-                    "price_per_kwh": 0.18,
-                    "total_price": 4.50,
-                    "location": "Residential Area",
-                    "status": "available",
-                    "created_at": datetime.now().isoformat()
-                }
-            ]
             return jsonify({
                 "success": True,
-                "listings": demo_listings,
-                "count": len(demo_listings),
+                "listings": [],
+                "count": 0,
                 "mode": "demo"
             })
-        
-        listings = list(db.energy_listings.find(
-            {"status": "available"},
-            {"_id": 0}
-        ).sort("created_at", -1))
-        
-        return jsonify({
-            "success": True,
-            "listings": listings,
-            "count": len(listings)
-        })
-        
+        listings = list(db.energy_listings.find({"status": "available"}, {"_id": 0}).sort("created_at", -1))
+        return jsonify({"success": True, "listings": listings, "count": len(listings)})
     except Exception as e:
-        print(f"🔥 Get listings error: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
-# ==================== USER ENDPOINTS ====================
 
-@app.route('/api/wallet', methods=['GET'])
-def get_wallet():
-    """Get user wallet balance (simplified - no auth for demo)"""
-    try:
-        # For demo, return a fixed balance
-        return jsonify({
-            "success": True,
-            "balance": 1000.00,
-            "currency": "USD",
-            "last_updated": datetime.now().isoformat()
-        })
-    except Exception as e:
-        print(f"Wallet error: {e}")
-        return jsonify({"success": False, "message": str(e)}), 500
+# ==================== OTHER USER ENDPOINTS ====================
 
 @app.route('/api/profile', methods=['GET'])
 def get_profile():
-    """Get user profile (simplified)"""
     try:
-        # For demo, return a profile
-        return jsonify({
-            "success": True,
-            "profile": {
-                "email": "demo@example.com",
-                "role": "buyer",
-                "wallet_balance": 1000.00,
-                "full_name": "Demo User",
-                "member_since": "2024-01-01"
-            }
-        })
+        email = request.args.get('email', '').strip().lower()
+        if email and is_db_connected():
+            user = db_users.users.find_one({"email": email})
+            if user:
+                return jsonify({
+                    "success": True,
+                    "profile": {
+                        "email": user['email'],
+                        "name": user.get('name', ''),
+                        "role": user.get('role', None),
+                        "wallet_balance": float(user.get('wallet_balance', 1000)),
+                        "ec_balance": user.get('ec_balance', 500),
+                        "member_since": user.get('created_at', '')
+                    }
+                })
+        return jsonify({"success": True, "profile": {"email": "demo@example.com", "role": "buyer", "wallet_balance": 1000.00}})
     except Exception as e:
-        print(f"Profile error: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
+
 
 @app.route('/api/transactions', methods=['GET'])
 def get_transactions():
-    """Get user transactions (demo)"""
     try:
-        demo_transactions = [
-            {
-                "id": "txn_001",
-                "type": "purchase",
-                "amount": -25.50,
-                "description": "Bought 150kWh from Solar Farm",
-                "date": "2024-01-15T10:30:00",
-                "status": "completed"
-            },
-            {
-                "id": "txn_002",
-                "type": "sale",
-                "amount": 42.75,
-                "description": "Sold 285kWh to Grid",
-                "date": "2024-01-14T14:20:00",
-                "status": "completed"
-            }
-        ]
-        
-        return jsonify({
-            "success": True,
-            "transactions": demo_transactions,
-            "count": len(demo_transactions)
-        })
+        email = request.args.get('email', '').strip().lower()
+        if email and is_db_connected():
+            trades_cursor = db.transactions.find({
+                "$or": [{"buyer_email": email}, {"seller_email": email}]
+            }).sort("created_at", -1).limit(20)
+            trades = []
+            for t in trades_cursor:
+                t['_id'] = str(t['_id'])
+                trades.append(t)
+            return jsonify({"success": True, "transactions": trades, "count": len(trades)})
+        return jsonify({"success": True, "transactions": [], "count": 0})
     except Exception as e:
-        print(f"Transactions error: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
-# ==================== INITIALIZATION ====================
 
 @app.route('/api/init-db', methods=['GET'])
 def init_database():
-    """Initialize database with test data"""
     try:
         if not is_db_connected():
-            return jsonify({
-                "success": False,
-                "message": "Database not connected"
-            }), 500
-            
-        # Create test users
+            return jsonify({"success": False, "message": "Database not connected"}), 500
         test_users = [
-            {
-                "email": "seller@example.com",
-                "password": "test123",  # Plain text to match login logic
-                "role": "seller",
-                "wallet_balance": 1000.00,
-                "name": "Test Seller"
-            },
-            {
-                "email": "buyer@example.com",
-                "password": "test123",  # Plain text to match login logic
-                "role": "buyer",
-                "wallet_balance": 500.00,
-                "name": "Test Buyer"
-            }
+            {"email": "seller@example.com", "password": "test123", "role": "seller", "wallet_balance": 1000.00, "name": "Test Seller"},
+            {"email": "buyer@example.com",  "password": "test123", "role": "buyer",  "wallet_balance": 500.00,  "name": "Test Buyer"}
         ]
-        
         for user in test_users:
             if not db.users.find_one({"email": user["email"]}):
                 user["user_id"] = str(uuid.uuid4())
                 user["created_at"] = datetime.now().isoformat()
                 db.users.insert_one(user)
-        
-        return jsonify({
-            "success": True,
-            "message": "Database initialized with test users",
-            "users_created": ["seller@example.com", "buyer@example.com"]
-        })
-        
+        return jsonify({"success": True, "message": "Database initialized"})
     except Exception as e:
-        print(f"Init DB error: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
+
 
 # ==================== ERROR HANDLERS ====================
 
 @app.errorhandler(404)
 def not_found(error):
-    return jsonify({
-        "success": False,
-        "message": "Endpoint not found",
-        "error": str(error)
-    }), 404
+    return jsonify({"success": False, "message": "Endpoint not found", "error": str(error)}), 404
 
 @app.errorhandler(500)
 def internal_error(error):
-    return jsonify({
-        "success": False,
-        "message": "Internal server error",
-        "error": str(error)
-    }), 500
+    return jsonify({"success": False, "message": "Internal server error", "error": str(error)}), 500
+
 
 # ==================== MAIN ====================
 
 if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+
     print("\n" + "=" * 60)
     print("⚡ E-DRIVE ENERGY MARKETPLACE BACKEND")
     print("=" * 60)
-    print(f"📦 MongoDB: {'✅ CONNECTED' if is_db_connected() else '❌ DISCONNECTED (Demo Mode)'}")
-    print("🌐 Server will run on:")
-    print("   - http://localhost:5000")
-    print("   - http://127.0.0.1:5000")
-    print("   - http://0.0.0.0:5000 (all network interfaces)")
+    print(f"📦 MongoDB:     {'✅ CONNECTED' if is_db_connected() else '❌ DISCONNECTED'}")
+    print(f"⛓️  Blockchain:  {BLOCKCHAIN_URL}")
+    print(f"🌐 Port:        {port}")
     print("=" * 60)
-    print("📋 Quick Test URLs:")
-    print("   Health:      http://localhost:5000/health")
-    print("   API Status:  http://localhost:5000/api/status")
-    print("   Listings:    http://localhost:5000/api/energy-listings")
-    print("=" * 60)
-    print("👤 Demo Accounts:")
-    print("   Seller: seller@example.com / test123")
-    print("   Buyer:  buyer@example.com / test123")
-    print("=" * 60)
-    print("\n🚀 Starting server...\n")
+    print("📋 Key Endpoints:")
+    print(f"   POST /api/confirm-trade  ← main trade endpoint")
+    print(f"   POST /api/wallet/topup   ← add EC for testing")
+    print(f"   GET  /api/rates          ← current rate period")
+    print(f"   GET  /api/trade-history  ← view past trades")
+    print(f"   GET  /api/wallet         ← EC + PKR balance")
+    print("=" * 60 + "\n")
+
+    app.run(host='0.0.0.0', port=port, debug=False)
     
-    # Run the app
-    app.run(
-        debug=True, 
-        host='0.0.0.0',  # Listen on all network interfaces
-        port=5000,
-        threaded=True
-    )
+
+
+
