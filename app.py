@@ -5,6 +5,7 @@ from pymongo import MongoClient
 from datetime import datetime
 import uuid
 import hashlib
+import time
 import os
 import requests
 from dotenv import load_dotenv
@@ -47,35 +48,50 @@ except Exception as e:
 BLOCKCHAIN_URL = os.getenv('BLOCKCHAIN_URL', 'http://localhost:5050')
 
 def ensure_blockchain_wallet(email):
-    """Create a blockchain wallet for this email if it doesn't exist yet."""
     try:
-        requests.post(
-            f"{BLOCKCHAIN_URL}/api/wallet/create",
-            json={"username": email},
-            timeout=5
-        )
+        requests.post(f"{BLOCKCHAIN_URL}/api/wallet/create",
+            json={"username": email}, timeout=10)
     except Exception as e:
         print(f"[WARN] Could not ensure wallet for {email}: {e}")
 
 def record_trade_on_blockchain(buyer_email, seller_email, units, price_per_unit):
     try:
-        # Ensure both parties have wallets on the blockchain before trading
+        # Wake the blockchain service first (free tier sleeps)
+        try:
+            requests.get(f"{BLOCKCHAIN_URL}/api/rates", timeout=30)
+        except:
+            pass
+
+        # Ensure both parties have wallets
         ensure_blockchain_wallet(buyer_email)
         ensure_blockchain_wallet(seller_email)
 
-        response = requests.post(
-            f"{BLOCKCHAIN_URL}/api/trade",
-            json={
-                "buyer":           buyer_email,
-                "seller":          seller_email,
-                "units":           float(units),
-                "seller_price_ec": float(price_per_unit)
-            },
-            timeout=15
-        )
-        result = response.json()
-        print(f"⛓️  Blockchain result: {result}")
-        return result
+        # Retry trade up to 2 times (in case service just woke up)
+        last_error = None
+        for attempt in range(2):
+            try:
+                response = requests.post(
+                    f"{BLOCKCHAIN_URL}/api/trade",
+                    json={
+                        "buyer":           buyer_email,
+                        "seller":          seller_email,
+                        "units":           float(units),
+                        "seller_price_ec": float(price_per_unit)
+                    },
+                    timeout=30
+                )
+                if response.text.strip():
+                    result = response.json()
+                    print(f"⛓️  Blockchain result: {result}")
+                    return result
+                else:
+                    print(f"[WARN] Empty response on attempt {attempt+1}, retrying...")
+                    time.sleep(3)
+            except Exception as e:
+                last_error = e
+                print(f"[WARN] Attempt {attempt+1} failed: {e}")
+                time.sleep(3)
+        return {"success": False, "error": str(last_error)}
     except Exception as e:
         print(f"[WARN] Blockchain record failed: {e}")
         return {"success": False, "error": str(e)}
@@ -541,17 +557,6 @@ def confirm_trade():
                 "blockchain_tx":   None,
                 "created_at":      datetime.now().isoformat()
             })
-
-        # ── Ensure wallets exist with enough EC for first-time users ────
-        for em in [buyer_email, seller_email]:
-            try:
-                w_res = requests.get(f"{BLOCKCHAIN_URL}/api/wallet/{em}", timeout=5).json()
-                if not w_res.get("success") or w_res.get("wallet", {}).get("balance", 0) == 0:
-                    requests.post(f"{BLOCKCHAIN_URL}/api/wallet/topup",
-                        json={"username": em, "amount_ec": 500}, timeout=5)
-            except:
-                pass
-        # ─────────────────────────────────────────────────────────────────
 
         # ── Record on blockchain ─────────────────────────────────
         blockchain_result = record_trade_on_blockchain(
