@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Create Offer - Energy Trading</title>
+    <style>
+        body { font-family: Arial; max-width: 500px; margin: 50px auto; padding: 20px; }
+        input { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 4px; }
+        button { width: 100%; padding: 12px; background: #27ae60; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #229954; }
+        .message { padding: 10px; margin: 10px 0; border-radius: 4px; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <h1>Create Energy Offer</h1>
+    
+    <form id="offerForm">
+        <input type="number" id="energy_amount" placeholder="Energy Amount (kWh)" step="0.01" required>
+        <input type="number" id="price_per_kwh" placeholder="Price per kWh ($)" step="0.01" required>
+        <input type="text" id="location" placeholder="Location" required>
+        <input type="datetime-local" id="available_from" required>
+        <input type="datetime-local" id="available_until" required>
+        
+        <button type="submit">Create Offer</button>
+    </form>
+    
+    <div id="message"></div>
+
+    <script>
+        const API_URL = 'http://127.0.0.1:5050';
+
+        document.getElementById('offerForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            // Get user info from localStorage
+            const user_id = localStorage.getItem('user_id') || 'test_user_123';
+            const seller_name = localStorage.getItem('user_name') || 'Test Seller';
+            
+            const offerData = {
+                seller_id: user_id,
+                seller_name: seller_name,
+                energy_amount: document.getElementById('energy_amount').value,
+                price_per_kwh: document.getElementById('price_per_kwh').value,
+                location: document.getElementById('location').value,
+                available_from: document.getElementById('available_from').value,
+                available_until: document.getElementById('available_until').value
+            };
+
+            try {
+                const response = await fetch(`${API_URL}/api/offers`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(offerData)
+                });
+
+                const result = await response.json();
+                const messageDiv = document.getElementById('message');
+
+                if (result.success) {
+                    messageDiv.className = 'message success';
+                    messageDiv.textContent = result.message;
+                    document.getElementById('offerForm').reset();
+                } else {
+                    messageDiv.className = 'message error';
+                    messageDiv.textContent = result.message;
+                }
+            } catch (error) {
+                const messageDiv = document.getElementById('message');
+                messageDiv.className = 'message error';
+                messageDiv.textContent = 'Error: Could not connect to server!';
+                console.error('Error:', error);
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>View All Data</title>
+    <style>
+        body { font-family: Arial; max-width: 1200px; margin: 20px auto; padding: 20px; }
+        button { padding: 10px 20px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; margin: 10px 5px; }
+        button:hover { background: #2980b9; }
+        .data-section { background: #f8f9fa; padding: 20px; margin: 20px 0; border-radius: 8px; }
+        pre { background: white; padding: 15px; border-radius: 4px; overflow-x: auto; }
+        h2 { color: #2c3e50; }
+    </style>
+</head>
+<body>
+    <h1>📊 View All Data in MongoDB</h1>
+    
+    <button onclick="loadAllData()">Refresh Data</button>
+    <button onclick="clearDisplay()">Clear Display</button>
+    
+    <div class="data-section">
+        <h2>👥 Users</h2>
+        <pre id="users">Click "Refresh Data" to load...</pre>
+    </div>
+    
+    <div class="data-section">
+        <h2>⚡ Energy Offers</h2>
+        <pre id="offers">Click "Refresh Data" to load...</pre>
+    </div>
+    
+    <div class="data-section">
+        <h2>💰 Bids</h2>
+        <pre id="bids">Click "Refresh Data" to load...</pre>
+    </div>
+
+    <script>
+        const API_URL = 'http://127.0.0.1:5050';
+
+        async function loadAllData() {
+            try {
+                const response = await fetch(`${API_URL}/api/view-all`);
+                const result = await response.json();
+                
+                if (result.success) {
+                    document.getElementById('users').textContent =
+                        JSON.stringify(result.data.users, null, 2);
+                    document.getElementById('offers').textContent =
+                        JSON.stringify(result.data.offers, null, 2);
+                    document.getElementById('bids').textContent =
+                        JSON.stringify(result.data.bids, null, 2);
+                } else {
+                    alert('Error loading data: ' + result.message);
+                }
+            } catch (error) {
+                alert('Error: Could not connect to server! Make sure Flask is running on port 5050.');
+                console.error('Error:', error);
+            }
+        }
+
+        function clearDisplay() {
+            document.getElementById('users').textContent = 'Cleared';
+            document.getElementById('offers').textContent = 'Cleared';
+            document.getElementById('bids').textContent = 'Cleared';
+        }
+
+        // Auto-load on page load
+        loadAllData();
+    </script>
+</body>
+</html>
