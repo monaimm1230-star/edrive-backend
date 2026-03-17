@@ -13,6 +13,7 @@ import smtplib
 import random
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import threading
 
 load_dotenv()
 
@@ -873,44 +874,44 @@ def generate_otp():
     return str(random.randint(100000, 999999))
  
 def send_otp_email(to_email, otp_code, purpose="verification"):
-    try:
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = f'⚡ E-Drive - Your {purpose} code: {otp_code}'
-        msg['From'] = f'E-Drive Energy <{GMAIL_ADDRESS}>'
-        msg['To'] = to_email
- 
-        html = f"""
-        <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; background: #1a1a1a; color: white; border-radius: 16px; overflow: hidden;">
-            <div style="background: #00b894; padding: 24px; text-align: center;">
-                <h1 style="margin: 0; font-size: 28px;">🔋 E-Drive Energy</h1>
-                <p style="margin: 8px 0 0; opacity: 0.9;">Energy Marketplace</p>
-            </div>
-            <div style="padding: 32px; text-align: center;">
-                <h2 style="color: #00b894; margin-bottom: 8px;">Your verification code</h2>
-                <p style="color: #b2bec3; margin-bottom: 24px;">Enter this code in the app to continue</p>
-                <div style="background: #2d3436; border: 2px solid #00b894; border-radius: 12px; padding: 20px; margin: 0 auto; display: inline-block;">
-                    <span style="font-size: 42px; font-weight: bold; letter-spacing: 12px; color: #00b894;">{otp_code}</span>
+    """Send OTP email in background thread to avoid blocking gunicorn."""
+    def _send():
+        try:
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = f'E-Drive - Your {purpose} code: {otp_code}'
+            msg['From'] = f'E-Drive Energy <{GMAIL_ADDRESS}>'
+            msg['To'] = to_email
+
+            html = f"""
+            <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; background: #1a1a1a; color: white; border-radius: 16px; overflow: hidden;">
+                <div style="background: #00b894; padding: 24px; text-align: center;">
+                    <h1 style="margin: 0; font-size: 28px;">E-Drive Energy</h1>
                 </div>
-                <p style="color: #636e72; margin-top: 24px; font-size: 13px;">This code expires in <strong style="color: white;">10 minutes</strong></p>
-                <p style="color: #636e72; font-size: 12px;">If you didn't request this, ignore this email.</p>
+                <div style="padding: 32px; text-align: center;">
+                    <h2 style="color: #00b894;">Your verification code</h2>
+                    <div style="background: #2d3436; border: 2px solid #00b894; border-radius: 12px; padding: 20px;">
+                        <span style="font-size: 42px; font-weight: bold; letter-spacing: 12px; color: #00b894;">{otp_code}</span>
+                    </div>
+                    <p style="color: #636e72; margin-top: 24px; font-size: 13px;">Expires in 10 minutes</p>
+                </div>
             </div>
-            <div style="background: #2d3436; padding: 16px; text-align: center;">
-                <p style="color: #636e72; font-size: 12px; margin: 0;">⛓️ Secured by ARM256 Blockchain</p>
-            </div>
-        </div>
-        """
- 
-        msg.attach(MIMEText(html, 'html'))
- 
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_ADDRESS, to_email, msg.as_string())
- 
-        print(f"✅ OTP email sent to {to_email}")
-        return True
-    except Exception as e:
-        print(f"❌ Email send error: {e}")
-        return False
+            """
+
+            msg.attach(MIMEText(html, 'html'))
+
+            with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+                server.sendmail(GMAIL_ADDRESS, to_email, msg.as_string())
+
+            print(f"✅ OTP email sent to {to_email}")
+        except Exception as e:
+            print(f"❌ Email send error: {e}")
+
+    threading.Thread(target=_send, daemon=True).start()
+    return True  # Return immediately, don't wait for email
  
  
 # ── Send OTP for Signup ───────────────────────────────────────
