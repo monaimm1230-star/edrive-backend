@@ -9,6 +9,10 @@ import time
 import os
 import requests
 from dotenv import load_dotenv
+import smtplib
+import random
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 load_dotenv()
 
@@ -857,6 +861,308 @@ def init_database():
         return jsonify({"success": True, "message": "Database initialized"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
+
+GMAIL_ADDRESS = os.getenv('GMAIL_ADDRESS', '')
+GMAIL_APP_PASSWORD = os.getenv('GMAIL_APP_PASSWORD', '')
+ 
+# In-memory OTP store: { email: { otp, expires_at } }
+# For production use Redis/MongoDB, but this works for FYP
+otp_store = {}
+ 
+def generate_otp():
+    return str(random.randint(100000, 999999))
+ 
+def send_otp_email(to_email, otp_code, purpose="verification"):
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = f'⚡ E-Drive - Your {purpose} code: {otp_code}'
+        msg['From'] = f'E-Drive Energy <{GMAIL_ADDRESS}>'
+        msg['To'] = to_email
+ 
+        html = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; background: #1a1a1a; color: white; border-radius: 16px; overflow: hidden;">
+            <div style="background: #00b894; padding: 24px; text-align: center;">
+                <h1 style="margin: 0; font-size: 28px;">🔋 E-Drive Energy</h1>
+                <p style="margin: 8px 0 0; opacity: 0.9;">Energy Marketplace</p>
+            </div>
+            <div style="padding: 32px; text-align: center;">
+                <h2 style="color: #00b894; margin-bottom: 8px;">Your verification code</h2>
+                <p style="color: #b2bec3; margin-bottom: 24px;">Enter this code in the app to continue</p>
+                <div style="background: #2d3436; border: 2px solid #00b894; border-radius: 12px; padding: 20px; margin: 0 auto; display: inline-block;">
+                    <span style="font-size: 42px; font-weight: bold; letter-spacing: 12px; color: #00b894;">{otp_code}</span>
+                </div>
+                <p style="color: #636e72; margin-top: 24px; font-size: 13px;">This code expires in <strong style="color: white;">10 minutes</strong></p>
+                <p style="color: #636e72; font-size: 12px;">If you didn't request this, ignore this email.</p>
+            </div>
+            <div style="background: #2d3436; padding: 16px; text-align: center;">
+                <p style="color: #636e72; font-size: 12px; margin: 0;">⛓️ Secured by ARM256 Blockchain</p>
+            </div>
+        </div>
+        """
+ 
+        msg.attach(MIMEText(html, 'html'))
+ 
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            server.sendmail(GMAIL_ADDRESS, to_email, msg.as_string())
+ 
+        print(f"✅ OTP email sent to {to_email}")
+        return True
+    except Exception as e:
+        print(f"❌ Email send error: {e}")
+        return False
+ 
+ 
+# ── Send OTP for Signup ───────────────────────────────────────
+@app.route('/api/send-otp', methods=['POST', 'OPTIONS'])
+def send_otp():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    try:
+        data = request.get_json() or {}
+        email = data.get('email', '').strip().lower()
+        name  = data.get('name', '').strip()
+ 
+        if not email:
+            return jsonify({"success": False, "message": "Email required"}), 400
+ 
+        # Check if email already registered
+        if is_db_connected():
+            existing = db_users.users.find_one({"email": email})
+            if existing:
+                return jsonify({"success": False, "message": "Email already registered. Please login."}), 400
+ 
+        otp_code = generate_otp()
+        otp_store[email] = {
+            "otp":        otp_code,
+            "name":       name,
+            "expires_at": datetime.now().timestamp() + 600  # 10 min
+        }
+ 
+        success = send_otp_email(email, otp_code, "signup")
+        if success:
+            return jsonify({"success": True, "message": f"Verification code sent to {email}"})
+        else:
+            return jsonify({"success": False, "message": "Failed to send email. Check Gmail config."}), 500
+ 
+    except Exception as e:
+        print(f"❌ Send OTP error: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+ 
+ 
+# ── Verify OTP and Complete Signup ────────────────────────────
+@app.route('/api/verify-otp', methods=['POST', 'OPTIONS'])
+def verify_otp():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    try:
+        data     = request.get_json() or {}
+        email    = data.get('email', '').strip().lower()
+        otp_code = data.get('otp', '').strip()
+        name     = data.get('name', '').strip()
+        password = data.get('password', '')
+ 
+        if not email or not otp_code:
+            return jsonify({"success": False, "message": "Email and OTP required"}), 400
+ 
+        record = otp_store.get(email)
+        if not record:
+            return jsonify({"success": False, "message": "No OTP found. Please request a new one."}), 400
+        if datetime.now().timestamp() > record['expires_at']:
+            del otp_store[email]
+            return jsonify({"success": False, "message": "OTP expired. Please request a new one."}), 400
+        if record['otp'] != otp_code:
+            return jsonify({"success": False, "message": "Invalid OTP. Please try again."}), 400
+ 
+        # OTP valid — create account
+        del otp_store[email]
+ 
+        # Create blockchain wallet
+        ec_balance = 500
+        wallet_address = ""
+        try:
+            wallet_response = requests.post(
+                f"{BLOCKCHAIN_URL}/api/wallet/create",
+                json={"username": email}, timeout=10
+            )
+            wallet_data = wallet_response.json()
+            ec_balance = wallet_data.get("wallet", {}).get("balance", 500)
+            wallet_address = wallet_data.get("wallet", {}).get("address", "")
+        except Exception as e:
+            print(f"[WARN] Could not create blockchain wallet: {e}")
+ 
+        user = {
+            "user_id":          str(uuid.uuid4()),
+            "name":             name or record.get('name', email.split('@')[0]),
+            "email":            email,
+            "password":         password,
+            "wallet_balance":   1000.00,
+            "ec_balance":       ec_balance,
+            "ec_wallet_address": wallet_address,
+            "email_verified":   True,
+            "created_at":       datetime.now().isoformat(),
+            "session_token":    str(uuid.uuid4())
+        }
+ 
+        if is_db_connected():
+            db_users.users.insert_one(user)
+ 
+        print(f"✅ Verified signup: {email}")
+        return jsonify({
+            "success": True,
+            "message": "Account created successfully!",
+            "user": {
+                "user_id":        user['user_id'],
+                "name":           user['name'],
+                "email":          user['email'],
+                "wallet_balance": user['wallet_balance'],
+                "ec_balance":     user['ec_balance'],
+                "role":           None
+            }
+        }), 201
+ 
+    except Exception as e:
+        print(f"❌ Verify OTP error: {e}")
+        import traceback; traceback.print_exc()
+        return jsonify({"success": False, "message": str(e)}), 500
+ 
+ 
+# ── Send OTP for Login (passwordless) ────────────────────────
+@app.route('/api/send-login-otp', methods=['POST', 'OPTIONS'])
+def send_login_otp():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    try:
+        data  = request.get_json() or {}
+        email = data.get('email', '').strip().lower()
+ 
+        if not email:
+            return jsonify({"success": False, "message": "Email required"}), 400
+ 
+        # Check user exists
+        if is_db_connected():
+            user = db_users.users.find_one({"email": email})
+            if not user:
+                return jsonify({"success": False, "message": "No account found with this email"}), 404
+ 
+        otp_code = generate_otp()
+        otp_store[f"login_{email}"] = {
+            "otp":        otp_code,
+            "expires_at": datetime.now().timestamp() + 600
+        }
+ 
+        success = send_otp_email(email, otp_code, "login")
+        if success:
+            return jsonify({"success": True, "message": f"Login code sent to {email}"})
+        else:
+            return jsonify({"success": False, "message": "Failed to send email"}), 500
+ 
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+ 
+ 
+# ── Verify Login OTP ──────────────────────────────────────────
+@app.route('/api/verify-login-otp', methods=['POST', 'OPTIONS'])
+def verify_login_otp():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    try:
+        data     = request.get_json() or {}
+        email    = data.get('email', '').strip().lower()
+        otp_code = data.get('otp', '').strip()
+ 
+        if not email or not otp_code:
+            return jsonify({"success": False, "message": "Email and OTP required"}), 400
+ 
+        record = otp_store.get(f"login_{email}")
+        if not record:
+            return jsonify({"success": False, "message": "No OTP found. Please request a new one."}), 400
+        if datetime.now().timestamp() > record['expires_at']:
+            del otp_store[f"login_{email}"]
+            return jsonify({"success": False, "message": "OTP expired. Please request a new one."}), 400
+        if record['otp'] != otp_code:
+            return jsonify({"success": False, "message": "Invalid OTP"}), 400
+ 
+        del otp_store[f"login_{email}"]
+ 
+        user = None
+        if is_db_connected():
+            user = db_users.users.find_one({"email": email})
+ 
+        print(f"✅ OTP login: {email}")
+        return jsonify({
+            "success": True,
+            "message": "Login successful!",
+            "user": {
+                "user_id":        str(user.get('user_id', '')) if user else '',
+                "name":           user.get('name', email.split('@')[0]) if user else email.split('@')[0],
+                "email":          email,
+                "wallet_balance": float(user.get('wallet_balance', 1000)) if user else 1000,
+                "role":           user.get('role', None) if user else None
+            }
+        })
+ 
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+ 
+# ── Google OAuth Login ────────────────────────────────────────
+@app.route('/api/google-login', methods=['POST', 'OPTIONS'])
+def google_login():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    try:
+        data  = request.get_json() or {}
+        email = data.get('email', '').strip().lower()
+        name  = data.get('name', '').strip()
+ 
+        if not email:
+            return jsonify({"success": False, "message": "Email required"}), 400
+ 
+        user = None
+        if is_db_connected():
+            user = db_users.users.find_one({"email": email})
+            if not user:
+                # Auto-register Google user
+                ec_balance = 500
+                try:
+                    wallet_response = requests.post(
+                        f"{BLOCKCHAIN_URL}/api/wallet/create",
+                        json={"username": email}, timeout=10
+                    )
+                    ec_balance = wallet_response.json().get("wallet", {}).get("balance", 500)
+                except:
+                    pass
+ 
+                user = {
+                    "user_id":        str(uuid.uuid4()),
+                    "name":           name or email.split('@')[0],
+                    "email":          email,
+                    "password":       "",
+                    "auth_provider":  "google",
+                    "wallet_balance": 1000.00,
+                    "ec_balance":     ec_balance,
+                    "email_verified": True,
+                    "created_at":     datetime.now().isoformat(),
+                    "session_token":  str(uuid.uuid4())
+                }
+                db_users.users.insert_one(user)
+                print(f"✅ New Google user: {email}")
+ 
+        return jsonify({
+            "success": True,
+            "message": "Google login successful!",
+            "user": {
+                "user_id":        str(user.get('user_id', '')),
+                "name":           user.get('name', name),
+                "email":          email,
+                "wallet_balance": float(user.get('wallet_balance', 1000)),
+                "role":           user.get('role', None)
+            }
+        })
+ 
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+        
 
 
 # ==================== ERROR HANDLERS ====================
