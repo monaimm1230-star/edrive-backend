@@ -859,6 +859,74 @@ def init_database():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
+# Add this route to your app.py just before # ==================== ERROR HANDLERS ====================
+
+@app.route('/api/google-login', methods=['POST', 'OPTIONS'])
+def google_login():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    try:
+        data  = request.get_json() or {}
+        email = data.get('email', '').strip().lower()
+        name  = data.get('name', '').strip()
+
+        if not email:
+            return jsonify({"success": False, "message": "Email required"}), 400
+
+        if is_db_connected():
+            user = db_users.users.find_one({"email": email})
+            if not user:
+                # Auto-register new Google user
+                ec_balance = 500
+                wallet_address = ""
+                try:
+                    wallet_response = requests.post(
+                        f"{BLOCKCHAIN_URL}/api/wallet/create",
+                        json={"username": email}, timeout=10
+                    )
+                    wallet_data = wallet_response.json()
+                    ec_balance = wallet_data.get("wallet", {}).get("balance", 500)
+                    wallet_address = wallet_data.get("wallet", {}).get("address", "")
+                except Exception as e:
+                    print(f"[WARN] Could not create blockchain wallet: {e}")
+
+                user = {
+                    "user_id":           str(uuid.uuid4()),
+                    "name":              name or email.split('@')[0],
+                    "email":             email,
+                    "password":          "",
+                    "auth_provider":     "google",
+                    "wallet_balance":    1000.00,
+                    "ec_balance":        ec_balance,
+                    "ec_wallet_address": wallet_address,
+                    "email_verified":    True,
+                    "created_at":        datetime.now().isoformat(),
+                    "session_token":     str(uuid.uuid4())
+                }
+                db_users.users.insert_one(user)
+                print(f"✅ New Google user registered: {email}")
+            else:
+                print(f"✅ Existing Google user login: {email}")
+
+            return jsonify({
+                "success": True,
+                "message": "Google login successful!",
+                "user": {
+                    "user_id":        str(user.get('user_id', '')),
+                    "name":           user.get('name', name),
+                    "email":          email,
+                    "wallet_balance": float(user.get('wallet_balance', 1000)),
+                    "role":           user.get('role', None)
+                }
+            })
+
+        return jsonify({"success": False, "message": "Database not connected"}), 500
+
+    except Exception as e:
+        print(f"❌ Google login error: {e}")
+        import traceback; traceback.print_exc()
+        return jsonify({"success": False, "message": str(e)}), 500
+
 
  
 
