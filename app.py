@@ -878,35 +878,34 @@ def generate_otp():
 def send_otp_email(to_email, otp_code, purpose="verification"):
     def _send():
         try:
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = f'E-Drive - Your {purpose} code: {otp_code}'
-            msg['From'] = f'E-Drive Energy <{GMAIL_ADDRESS}>'
-            msg['To'] = to_email
-
-            html = f"""
-            <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; background: #1a1a1a; color: white; border-radius: 16px; overflow: hidden;">
-                <div style="background: #00b894; padding: 24px; text-align: center;">
-                    <h1 style="margin: 0; font-size: 28px;">E-Drive Energy</h1>
-                </div>
-                <div style="padding: 32px; text-align: center;">
-                    <h2 style="color: #00b894;">Your {purpose} code</h2>
-                    <p style="color: #b2bec3;">Enter this in the app to continue</p>
-                    <div style="background: #2d3436; border: 2px solid #00b894; border-radius: 12px; padding: 20px; margin: 20px 0;">
-                        <span style="font-size: 42px; font-weight: bold; letter-spacing: 12px; color: #00b894;">{otp_code}</span>
+            response = requests.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {os.getenv('RESEND_API_KEY', '')}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "from": "E-Drive Energy <onboarding@resend.dev>",
+                    "to": [to_email],
+                    "subject": f"E-Drive - Your {purpose} code: {otp_code}",
+                    "html": f"""
+                    <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; background: #1a1a1a; color: white; border-radius: 16px; overflow: hidden;">
+                        <div style="background: #00b894; padding: 24px; text-align: center;">
+                            <h1 style="margin: 0;">E-Drive Energy</h1>
+                        </div>
+                        <div style="padding: 32px; text-align: center;">
+                            <h2 style="color: #00b894;">Your {purpose} code</h2>
+                            <div style="background: #2d3436; border: 2px solid #00b894; border-radius: 12px; padding: 20px; margin: 20px 0;">
+                                <span style="font-size: 42px; font-weight: bold; letter-spacing: 12px; color: #00b894;">{otp_code}</span>
+                            </div>
+                            <p style="color: #636e72; font-size: 13px;">Expires in 10 minutes</p>
+                        </div>
                     </div>
-                    <p style="color: #636e72; font-size: 13px;">Expires in <strong style="color: white;">10 minutes</strong></p>
-                </div>
-            </div>
-            """
-            msg.attach(MIMEText(html, 'html'))
-
-            with smtplib.SMTP('smtp.gmail.com', 587) as server:
-                server.ehlo()
-                server.starttls()
-                server.ehlo()
-                server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-                server.sendmail(GMAIL_ADDRESS, to_email, msg.as_string())
-            print(f"✅ OTP email sent to {to_email}")
+                    """
+                },
+                timeout=10
+            )
+            print(f"Resend status: {response.status_code} - {response.text}")
         except Exception as e:
             print(f"❌ Email send error: {e}")
 
