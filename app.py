@@ -9,6 +9,9 @@ import time
 import os
 import requests
 from dotenv import load_dotenv
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 import random
 
@@ -873,42 +876,37 @@ def generate_otp():
     return str(random.randint(100000, 999999))
  
 def send_otp_email(to_email, otp_code, purpose="verification"):
-    """Send OTP email via Brevo API in background thread."""
     def _send():
         try:
-            response = requests.post(
-                "https://api.brevo.com/v3/smtp/email",
-                headers={
-                    "api-key": os.getenv("BREVO_API_KEY", ""),
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "sender": {"name": "E-Drive Energy", "email": "monaimm1230@gmail.com"},
-                    "to": [{"email": to_email}],
-                    "subject": f"E-Drive - Your {purpose} code: {otp_code}",
-                    "htmlContent": f"""
-                    <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; background: #1a1a1a; color: white; border-radius: 16px; overflow: hidden;">
-                        <div style="background: #00b894; padding: 24px; text-align: center;">
-                            <h1 style="margin: 0; font-size: 28px;">E-Drive Energy</h1>
-                            <p style="margin: 8px 0 0; opacity: 0.9;">Energy Marketplace</p>
-                        </div>
-                        <div style="padding: 32px; text-align: center;">
-                            <h2 style="color: #00b894;">Your {purpose} code</h2>
-                            <p style="color: #b2bec3;">Enter this code in the app to continue</p>
-                            <div style="background: #2d3436; border: 2px solid #00b894; border-radius: 12px; padding: 20px; margin: 20px 0;">
-                                <span style="font-size: 42px; font-weight: bold; letter-spacing: 12px; color: #00b894;">{otp_code}</span>
-                            </div>
-                            <p style="color: #636e72; font-size: 13px;">Expires in <strong style="color: white;">10 minutes</strong></p>
-                        </div>
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = f'E-Drive - Your {purpose} code: {otp_code}'
+            msg['From'] = f'E-Drive Energy <{GMAIL_ADDRESS}>'
+            msg['To'] = to_email
+
+            html = f"""
+            <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; background: #1a1a1a; color: white; border-radius: 16px; overflow: hidden;">
+                <div style="background: #00b894; padding: 24px; text-align: center;">
+                    <h1 style="margin: 0; font-size: 28px;">E-Drive Energy</h1>
+                </div>
+                <div style="padding: 32px; text-align: center;">
+                    <h2 style="color: #00b894;">Your {purpose} code</h2>
+                    <p style="color: #b2bec3;">Enter this in the app to continue</p>
+                    <div style="background: #2d3436; border: 2px solid #00b894; border-radius: 12px; padding: 20px; margin: 20px 0;">
+                        <span style="font-size: 42px; font-weight: bold; letter-spacing: 12px; color: #00b894;">{otp_code}</span>
                     </div>
-                    """
-                },
-                timeout=10
-            )
-            if response.status_code == 201:
-                print(f"✅ OTP email sent to {to_email}")
-            else:
-                print(f"❌ Brevo error: {response.status_code} - {response.text}")
+                    <p style="color: #636e72; font-size: 13px;">Expires in <strong style="color: white;">10 minutes</strong></p>
+                </div>
+            </div>
+            """
+            msg.attach(MIMEText(html, 'html'))
+
+            with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+                server.sendmail(GMAIL_ADDRESS, to_email, msg.as_string())
+            print(f"✅ OTP email sent to {to_email}")
         except Exception as e:
             print(f"❌ Email send error: {e}")
 
