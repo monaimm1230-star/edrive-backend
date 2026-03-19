@@ -859,6 +859,28 @@ def init_database():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
+@app.route('/auth/google/callback')
+def google_callback():
+    # Get the token from the URL fragment
+    return """
+    <html>
+    <body>
+    <script>
+        // Extract access token from URL and send back to app
+        const hash = window.location.hash.substring(1);
+        const params = new URLSearchParams(hash);
+        const token = params.get('access_token');
+        
+        // Send token back to the Expo app
+        if (token) {
+            window.location.href = 'exp://localhost:8081?access_token=' + token;
+        }
+    </script>
+    <p>Completing sign in...</p>
+    </body>
+    </html>
+    """, 200
+
 # Add this route to your app.py just before # ==================== ERROR HANDLERS ====================
 
 @app.route('/api/google-login', methods=['POST', 'OPTIONS'])
