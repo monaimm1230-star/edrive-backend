@@ -16,7 +16,7 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins=["http://localhost:*", "http://127.0.0.1:*", "*"])
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="gevent", logger=False, engineio_logger=False)
 
 username = os.getenv('MONGO_USERNAME', "romaisamaqbool008_db_user")
 password = os.getenv('MONGO_PASSWORD', "arm256")
@@ -887,7 +887,7 @@ def google_callback():
 # ==================== CHAT / MESSAGING ====================
 
 @app.route('/api/chat/send', methods=['POST', 'OPTIONS'])
-def send_message():
+def chat_send_message():
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     try:
