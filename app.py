@@ -1,6 +1,7 @@
 # ==================== IMPORTS ====================
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit, join_room, leave_room
 from pymongo import MongoClient
 from datetime import datetime
 import uuid
@@ -15,6 +16,7 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins=["http://localhost:*", "http://127.0.0.1:*", "*"])
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 username = os.getenv('MONGO_USERNAME', "romaisamaqbool008_db_user")
 password = os.getenv('MONGO_PASSWORD', "arm256")
@@ -881,7 +883,105 @@ def google_callback():
     </html>
     """, 200
 
-# Add this route to your app.py just before # ==================== ERROR HANDLERS ====================
+# Add this route to your app.py just before 
+# ==================== CHAT / MESSAGING ====================
+
+@app.route('/api/chat/send', methods=['POST', 'OPTIONS'])
+def send_message():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    try:
+        data = request.get_json() or {}
+        transaction_id = data.get('transaction_id', '').strip()
+        sender_email   = data.get('sender_email', '').strip().lower()
+        message        = data.get('message', '').strip()
+
+        if not transaction_id or not sender_email or not message:
+            return jsonify({"success": False, "message": "transaction_id, sender_email, message required"}), 400
+
+        msg_doc = {
+            "message_id":     str(uuid.uuid4()),
+            "transaction_id": transaction_id,
+            "sender_email":   sender_email,
+            "message":        message,
+            "created_at":     datetime.now().isoformat(),
+            "read":           False
+        }
+
+        if is_db_connected():
+            db.messages.insert_one(msg_doc)
+
+        # Emit to the chat room via WebSocket
+        socketio.emit('new_message', {
+            "message_id":     msg_doc["message_id"],
+            "sender_email":   sender_email,
+            "message":        message,
+            "created_at":     msg_doc["created_at"],
+        }, room=transaction_id)
+
+        return jsonify({"success": True, "message_id": msg_doc["message_id"]})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route('/api/chat/messages', methods=['GET'])
+def get_messages():
+    try:
+        transaction_id = request.args.get('transaction_id', '').strip()
+        if not transaction_id:
+            return jsonify({"success": False, "message": "transaction_id required"}), 400
+
+        if not is_db_connected():
+            return jsonify({"success": True, "messages": []})
+
+        msgs = list(db.messages.find(
+            {"transaction_id": transaction_id},
+            {"_id": 0}
+        ).sort("created_at", 1))
+
+        return jsonify({"success": True, "messages": msgs})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+# ── Socket events ──────────────────────────────────────────
+@socketio.on('join_chat')
+def on_join(data):
+    room = data.get('transaction_id')
+    if room:
+        join_room(room)
+        emit('joined', {"room": room})
+
+@socketio.on('leave_chat')
+def on_leave(data):
+    room = data.get('transaction_id')
+    if room:
+        leave_room(room)
+
+@socketio.on('connect')
+def on_connect():
+    pass
+
+@socketio.on('disconnect')
+def on_disconnect():
+    pass
+# ──────────────────────────────────────────────────────────
+
+# ==================== KEEP BLOCKCHAIN ALIVE ====================
+
+def keep_blockchain_alive():
+    while True:
+        try:
+            requests.get(f"{BLOCKCHAIN_URL}/api/rates", timeout=10)
+            print("🏓 Blockchain keep-alive ping")
+        except:
+            pass
+        time.sleep(600)
+
+import threading
+threading.Thread(target=keep_blockchain_alive, daemon=True).start()
+
+# ==================== ERROR HANDLERS ====================
 
 @app.route('/api/google-login', methods=['POST', 'OPTIONS'])
 def google_login():
@@ -955,6 +1055,104 @@ def google_login():
  
 
 
+
+# ==================== CHAT / MESSAGING ====================
+
+@app.route('/api/chat/send', methods=['POST', 'OPTIONS'])
+def send_message():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    try:
+        data = request.get_json() or {}
+        transaction_id = data.get('transaction_id', '').strip()
+        sender_email   = data.get('sender_email', '').strip().lower()
+        message        = data.get('message', '').strip()
+
+        if not transaction_id or not sender_email or not message:
+            return jsonify({"success": False, "message": "transaction_id, sender_email, message required"}), 400
+
+        msg_doc = {
+            "message_id":     str(uuid.uuid4()),
+            "transaction_id": transaction_id,
+            "sender_email":   sender_email,
+            "message":        message,
+            "created_at":     datetime.now().isoformat(),
+            "read":           False
+        }
+
+        if is_db_connected():
+            db.messages.insert_one(msg_doc)
+
+        # Emit to the chat room via WebSocket
+        socketio.emit('new_message', {
+            "message_id":     msg_doc["message_id"],
+            "sender_email":   sender_email,
+            "message":        message,
+            "created_at":     msg_doc["created_at"],
+        }, room=transaction_id)
+
+        return jsonify({"success": True, "message_id": msg_doc["message_id"]})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route('/api/chat/messages', methods=['GET'])
+def get_messages():
+    try:
+        transaction_id = request.args.get('transaction_id', '').strip()
+        if not transaction_id:
+            return jsonify({"success": False, "message": "transaction_id required"}), 400
+
+        if not is_db_connected():
+            return jsonify({"success": True, "messages": []})
+
+        msgs = list(db.messages.find(
+            {"transaction_id": transaction_id},
+            {"_id": 0}
+        ).sort("created_at", 1))
+
+        return jsonify({"success": True, "messages": msgs})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+# ── Socket events ──────────────────────────────────────────
+@socketio.on('join_chat')
+def on_join(data):
+    room = data.get('transaction_id')
+    if room:
+        join_room(room)
+        emit('joined', {"room": room})
+
+@socketio.on('leave_chat')
+def on_leave(data):
+    room = data.get('transaction_id')
+    if room:
+        leave_room(room)
+
+@socketio.on('connect')
+def on_connect():
+    pass
+
+@socketio.on('disconnect')
+def on_disconnect():
+    pass
+# ──────────────────────────────────────────────────────────
+
+# ==================== KEEP BLOCKCHAIN ALIVE ====================
+
+def keep_blockchain_alive():
+    while True:
+        try:
+            requests.get(f"{BLOCKCHAIN_URL}/api/rates", timeout=10)
+            print("🏓 Blockchain keep-alive ping")
+        except:
+            pass
+        time.sleep(600)
+
+import threading
+threading.Thread(target=keep_blockchain_alive, daemon=True).start()
+
 # ==================== ERROR HANDLERS ====================
 
 @app.errorhandler(404)
@@ -986,7 +1184,4 @@ if __name__ == '__main__':
     print(f"   GET  /api/wallet         ← EC + PKR balance")
     print("=" * 60 + "\n")
 
-    app.run(host='0.0.0.0', port=port, debug=False)
-
-
-
+    socketio.run(app, host='0.0.0.0', port=port, debug=False)
