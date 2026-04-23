@@ -925,7 +925,7 @@ def chat_send_message():
 
 
 @app.route('/api/chat/messages', methods=['GET'])
-def get_messages():
+def chat_get_messages(): 
     try:
         transaction_id = request.args.get('transaction_id', '').strip()
         if not transaction_id:
