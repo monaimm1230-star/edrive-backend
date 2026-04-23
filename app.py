@@ -16,7 +16,7 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins=["http://localhost:*", "http://127.0.0.1:*", "*"])
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="gevent", logger=False, engineio_logger=False)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 username = os.getenv('MONGO_USERNAME', "romaisamaqbool008_db_user")
 password = os.getenv('MONGO_PASSWORD', "arm256")
