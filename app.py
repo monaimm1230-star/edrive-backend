@@ -338,23 +338,31 @@ def get_wallet():
         email = request.args.get('email', '').strip().lower()
 
         if email:
+            # Try blockchain first, fall back to MongoDB
+            ec_balance = None
+            ec_address = ""
             try:
                 bc_response = requests.get(
                     f"{BLOCKCHAIN_URL}/api/wallet/{email}",
                     timeout=5
                 )
                 bc_data = bc_response.json()
-                ec_balance = bc_data.get("wallet", {}).get("balance", 500)
+                ec_balance = bc_data.get("wallet", {}).get("balance")
                 ec_address = bc_data.get("wallet", {}).get("address", "")
             except Exception:
-                ec_balance = 500
-                ec_address = ""
+                pass
 
             pkr_balance = 1000.00
             if is_db_connected():
                 user = db_users.users.find_one({"email": email})
                 if user:
                     pkr_balance = float(user.get('wallet_balance', 1000))
+                    # Use MongoDB ec_balance if blockchain didn't return one
+                    if ec_balance is None:
+                        ec_balance = float(user.get('ec_balance', 500))
+
+            if ec_balance is None:
+                ec_balance = 500
 
             return jsonify({
                 "success": True,
@@ -422,7 +430,67 @@ def get_rates():
         })
 
 
-# ==================== ENERGY LISTING ENDPOINTS ====================
+# ==================== PUSH NOTIFICATIONS ====================
+
+EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+
+def send_push_notification(token, title, body, data=None):
+    """Send a push notification via Expo's push service"""
+    if not token or not token.startswith('ExponentPushToken'):
+        return
+    try:
+        requests.post(EXPO_PUSH_URL, json={
+            "to":    token,
+            "title": title,
+            "body":  body,
+            "data":  data or {},
+            "sound": "default",
+            "badge": 1,
+            "channelId": "edrive",
+        }, timeout=10)
+        print(f"📲 Push sent → {token[:30]}...")
+    except Exception as e:
+        print(f"[WARN] Push failed: {e}")
+
+def get_push_token(email):
+    """Look up a user's push token from DB"""
+    if not is_db_connected():
+        return None
+    try:
+        user = db_users.users.find_one({"email": email}, {"push_token": 1})
+        return user.get("push_token") if user else None
+    except:
+        return None
+
+@app.route('/api/register-push-token', methods=['POST', 'OPTIONS'])
+def register_push_token():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    try:
+        data     = request.get_json() or {}
+        email    = data.get('email', '').strip().lower()
+        token    = data.get('token', '').strip()
+        platform = data.get('platform', 'unknown')
+
+        if not email or not token:
+            return jsonify({"success": False, "message": "email and token required"}), 400
+
+        if is_db_connected():
+            db_users.users.update_one(
+                {"email": email},
+                {"$set": {
+                    "push_token":          token,
+                    "push_token_platform": platform,
+                    "push_token_updated":  datetime.now().isoformat()
+                }}
+            )
+            print(f"📲 Push token saved for {email} ({platform})")
+
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# ============================================================
 
 @app.route('/api/energy-offer', methods=['POST', 'OPTIONS'])
 def create_energy_offer():
@@ -577,6 +645,38 @@ def confirm_trade():
                     "private_block":   blockchain_result.get("private_block_index"),
                     "blockchain_hash": blockchain_result.get("private_block_hash")
                 }}
+            )
+        # ────────────────────────────────────────────────────────
+
+        # ── Update EC balances in MongoDB ────────────────────────
+        total_ec = round(units * price_per_unit, 2)
+        if is_db_connected():
+            db_users.users.update_one(
+                {"email": buyer_email},
+                {"$inc": {"ec_balance": -total_ec}}
+            )
+            db_users.users.update_one(
+                {"email": seller_email},
+                {"$inc": {"ec_balance": total_ec}}
+            )
+            print(f"💰 Balances updated: {buyer_email} -{total_ec} EC, {seller_email} +{total_ec} EC")
+        # ────────────────────────────────────────────────────────
+        buyer_token  = get_push_token(buyer_email)
+        seller_token = get_push_token(seller_email)
+
+        if buyer_token:
+            send_push_notification(
+                buyer_token,
+                "⚡ Trade Complete!",
+                f"You bought {units} units for {total_ec} EC",
+                {"screen": "/transactions"}
+            )
+        if seller_token:
+            send_push_notification(
+                seller_token,
+                "🏪 Energy Sold!",
+                f"You sold {units} units — {total_ec} EC credited",
+                {"screen": "/transactions"}
             )
         # ────────────────────────────────────────────────────────
 
@@ -905,7 +1005,8 @@ def chat_send_message():
             "sender_email":   sender_email,
             "message":        message,
             "created_at":     datetime.now().isoformat(),
-            "read":           False
+            "read":           False,
+            "read_by":        [sender_email]
         }
 
         if is_db_connected():
@@ -1077,7 +1178,8 @@ def send_message():
             "sender_email":   sender_email,
             "message":        message,
             "created_at":     datetime.now().isoformat(),
-            "read":           False
+            "read":           False,
+            "read_by":        [sender_email]
         }
 
         if is_db_connected():
@@ -1112,6 +1214,64 @@ def get_messages():
         ).sort("created_at", 1))
 
         return jsonify({"success": True, "messages": msgs})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route('/api/chat/unread', methods=['GET'])
+def get_unread_counts():
+    """Return unread message counts per transaction for a user"""
+    try:
+        email = request.args.get('email', '').strip().lower()
+        if not email:
+            return jsonify({"success": False, "message": "email required"}), 400
+
+        if not is_db_connected():
+            return jsonify({"success": True, "unread": {}})
+
+        # Find all messages NOT sent by this user and NOT read by them
+        pipeline = [
+            {"$match": {
+                "sender_email": {"$ne": email},
+                "read_by":      {"$not": {"$elemMatch": {"$eq": email}}}
+            }},
+            {"$group": {
+                "_id":   "$transaction_id",
+                "count": {"$sum": 1}
+            }}
+        ]
+        results = list(db.messages.aggregate(pipeline))
+        unread = {r["_id"]: r["count"] for r in results}
+
+        return jsonify({"success": True, "unread": unread})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route('/api/chat/mark-read', methods=['POST', 'OPTIONS'])
+def mark_chat_read():
+    """Mark all messages in a transaction as read by a user"""
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    try:
+        data           = request.get_json() or {}
+        transaction_id = data.get('transaction_id', '').strip()
+        reader_email   = data.get('reader_email', '').strip().lower()
+
+        if not transaction_id or not reader_email:
+            return jsonify({"success": False, "message": "transaction_id and reader_email required"}), 400
+
+        if is_db_connected():
+            db.messages.update_many(
+                {
+                    "transaction_id": transaction_id,
+                    "sender_email":   {"$ne": reader_email},
+                    "read_by":        {"$not": {"$elemMatch": {"$eq": reader_email}}}
+                },
+                {"$addToSet": {"read_by": reader_email}}
+            )
+
+        return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
