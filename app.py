@@ -3,14 +3,13 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from pymongo import MongoClient
-from datetime import datetime
 import uuid
 import hashlib
 import time
 import os
 import requests
 from dotenv import load_dotenv
-
+from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -514,7 +513,8 @@ def create_energy_offer():
             "longitude": data.get('longitude'),
             "location_string": data.get('location_string'),
             "status": data.get('status', 'available'),
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.now().isoformat(),
+            "expires_at": (datetime.now() + timedelta(days=7)).isoformat()
         }
 
         db.offers.insert_one(offer_doc)
@@ -524,7 +524,6 @@ def create_energy_offer():
     except Exception as e:
         print(f"❌ Create offer error: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
-
 
 @app.route('/api/energy-request', methods=['POST', 'OPTIONS'])
 def create_energy_request():
@@ -548,7 +547,8 @@ def create_energy_request():
             "longitude": data.get('longitude'),
             "location_string": data.get('location_string'),
             "status": data.get('status', 'pending'),
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.now().isoformat(),
+            "expires_at": (datetime.now() + timedelta(days=7)).isoformat()
         }
 
         db.requests.insert_one(request_doc)
@@ -609,6 +609,15 @@ def confirm_trade():
         if price_per_unit <= 0:
             return jsonify({"success": False, "message": "price_per_unit must be greater than 0"}), 400
 
+        # ── Expiry check ─────────────────────────────────────────
+        if offer_id and is_db_connected():
+            offer = db.offers.find_one({"offer_id": offer_id})
+            if offer:
+                expires_at = offer.get("expires_at")
+                if expires_at and datetime.fromisoformat(expires_at) < datetime.now():
+                    return jsonify({"success": False, "message": "This offer has expired and can no longer be traded"}), 400
+        # ────────────────────────────────────────────────────────
+
         transaction_id = str(uuid.uuid4())
 
         if is_db_connected():
@@ -661,6 +670,7 @@ def confirm_trade():
             )
             print(f"💰 Balances updated: {buyer_email} -{total_ec} EC, {seller_email} +{total_ec} EC")
         # ────────────────────────────────────────────────────────
+
         buyer_token  = get_push_token(buyer_email)
         seller_token = get_push_token(seller_email)
 
