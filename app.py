@@ -690,17 +690,6 @@ def confirm_trade():
             )
         # ────────────────────────────────────────────────────────
 
-        # ── Real-time alert to seller if online ──────────────────
-        socketio.emit('trade_sold', {
-            "seller_email":    seller_email,
-            "buyer_email":     buyer_email,
-            "units":           units,
-            "total_ec":        total_ec,
-            "transaction_id":  transaction_id,
-        }, room=seller_email)
-        print(f"📡 trade_sold emitted to {seller_email}")
-        # ────────────────────────────────────────────────────────
-
         return jsonify({
             "success": True,
             "message": "Trade confirmed and recorded on blockchain!",
@@ -1067,14 +1056,6 @@ def chat_get_messages():
 
 
 # ── Socket events ──────────────────────────────────────────
-
-@socketio.on('join_user_room')
-def join_user_room(data):
-    email = data.get('email', '').strip().lower()
-    if email:
-        join_room(email)
-        print(f"👤 {email} joined personal room")
-
 @socketio.on('join_chat')
 def on_join(data):
     room = data.get('transaction_id')
