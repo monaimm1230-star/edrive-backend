@@ -514,7 +514,7 @@ def create_energy_offer():
             "location_string": data.get('location_string'),
             "status": data.get('status', 'available'),
             "created_at": datetime.now().isoformat(),
-            "expires_at": (datetime.now() + timedelta(days=7)).isoformat()
+            "expires_at": (datetime.now() + timedelta(hours=1)).isoformat()
         }
 
         db.offers.insert_one(offer_doc)
@@ -548,7 +548,7 @@ def create_energy_request():
             "location_string": data.get('location_string'),
             "status": data.get('status', 'pending'),
             "created_at": datetime.now().isoformat(),
-            "expires_at": (datetime.now() + timedelta(days=7)).isoformat()
+            "expires_at": (datetime.now() + timedelta(hours=1)).isoformat()
         }
 
         db.requests.insert_one(request_doc)
